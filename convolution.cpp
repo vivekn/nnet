@@ -5,12 +5,12 @@
 #define all(v) v.begin(), v.end()
 #define EPS 1e-18
 
-static float alpha0 = 0.1, alpha;
+static float alpha0 = 0.05, alpha, momentum = 0.5;
 int ctr = 0;
 
 void initialize() {
 	// initialize weights
-	for(int i=0; i < NUM_CONV/4; i++)
+	for(int i=0; i < NUM_CONV; i++)
 		for(int j=0; j < NUM_HIDDEN; j++)
 			hiddenWeights[i][j] = (1.0 * rand() / RAND_MAX) - 0.5;
 
@@ -18,19 +18,22 @@ void initialize() {
 		for(int j=0; j < NUM_CLASSES; j++)
 			outWeights[i][j] = (1.0 * rand() / RAND_MAX) - 0.5;
 
+
 	for(int i=0; i < PATCH; i++)
 		for(int j=0; j < PATCH; j++)
-			convWeights[i*PATCH + j] = (1.0 * rand() / RAND_MAX) - 0.5;
+			for(int k=0; k < NFILTERS; k++)
+				convWeights[k][i*PATCH + j] = (1.0 * rand() / RAND_MAX) - 0.5;
 
 	build_maps();
 }
 
 void build_maps() {
+	for(int k=0; k < NFILTERS; k++)
 	for(int i=0; i < NUM_CONV; i++) {
 		int x = i / CDIM, y = i % CDIM;
 		for(int dx=0; dx < PATCH; dx++)
 			for(int dy=0; dy < PATCH; dy++)
-				reverse_map[i].push_back((x+dx) * 28 + (y+dy));
+				reverse_map[k * NUM_CONV + i].push_back((x+dx) * 28 + (y+dy));
 	}
 }
 
@@ -70,13 +73,14 @@ void softmax(vector<float> &result) {
 }
 
 vector<float> convolute(vector<int> &image) {
-	vector<float> result(NUM_CONV, 0);
+	vector<float> result(NFILTERS * NUM_CONV, 0);
 
+	for(int k=0; k < NFILTERS; k++)
 	for(int i=0; i < NUM_CONV; i++) {
 		float z = 0.0;
-		for(int j=0; j < reverse_map[i].size(); j++) 
-			z += convWeights[j]*image[reverse_map[i][j]];
-		result[i] = sigmoid(z);
+		for(int j=0; j < reverse_map[k*NUM_CONV+i].size(); j++) 
+			z += convWeights[k][j]*image[reverse_map[k*NUM_CONV+i][j]];
+		result[k*NUM_CONV+i] = sigmoid(z);
 	}
 
 	return result;
@@ -86,8 +90,9 @@ vector<float> propagate_hidden(vector<float> &inputs) {
 	vector<float> result(NUM_HIDDEN, 0);
 	for(int i=0; i < NUM_HIDDEN; i++) {
 		float z = 0.0;
-		for(int j=0; j < NUM_CONV/4; j++)
-			z += inputs[j] * hiddenWeights[j][i];
+		for(int j=0; j < NUM_CONV; j++)
+			for(int k=0; k < NFILTERS; k++)
+				z += inputs[k*NUM_CONV+j] * hiddenWeights[k*NUM_CONV+j][i];
 		result[i] = sigmoid(z);
 	}
 	return result;
@@ -125,24 +130,25 @@ vector<float> hidden_derivs(vector<float> &hiddenActivity, vector<float> &oderiv
 }
 
 vector<float> image_derivs(vector<float> &convImage, vector<float> &hderivs) {
-	vector<float> result(NUM_CONV/4, 0);
+	vector<float> result(NUM_CONV*NFILTERS, 0);
 
-	for(int i=0; i < NUM_CONV/4; i++)
-		for(int j=0; j < NUM_HIDDEN; j++) 
-			result[i] += hiddenWeights[i][j] * convImage[i] * (1.0 - convImage[i]) * hderivs[j];
+	for(int i=0; i < NUM_CONV; i++)
+		for(int k=0; k < NFILTERS; k++)
+			for(int j=0; j < NUM_HIDDEN; j++) 
+				result[k*NUM_CONV+i] += hiddenWeights[k*NUM_CONV+i][j] * convImage[k*NUM_CONV+i] * (1.0 - convImage[k*NUM_CONV+i]) * hderivs[j];
 
 	return result;
 }
 
 int classify(vector<int> &image) {
-	vector<float> conv = downsample(convolute(image));
+	vector<float> conv = (convolute(image));
 	vector<float> hact = propagate_hidden(conv);
 	vector<float> probs = propagate_out(hact);
 	return max_element(all(probs)) - probs.begin();	
 }
 
 float train_example(vector<int> &image, int label) {
-	vector<float> conv = downsample(convolute(image));
+	vector<float> conv = (convolute(image));
 	vector<float> hact = propagate_hidden(conv);
 	vector<float> probs = propagate_out(hact);
 
@@ -150,23 +156,34 @@ float train_example(vector<int> &image, int label) {
 	vector<float> hderivs = hidden_derivs(hact, oderivs);
 	vector<float> iderivs = image_derivs(conv, hderivs);
 	
+	float delta;
 	// update output layer weights
 	for(int i=0; i < NUM_HIDDEN; i++)
-		for(int j=0; j < NUM_CLASSES; j++)
-			outWeights[i][j] += alpha * hact[i] * oderivs[j];
-
+		for(int j=0; j < NUM_CLASSES; j++){
+			delta = alpha * hact[i] * oderivs[j];
+			outVelocity[i][j] = outVelocity[i][j]*momentum  + delta;
+			outWeights[i][j] += outVelocity[i][j];
+		}
 	// update hidden layer weights
-	for(int i=0; i < NUM_CONV/4; i++)
+	for(int i=0; i < NUM_CONV; i++)
 		for(int j=0; j < NUM_HIDDEN; j++)
-			hiddenWeights[i][j] += alpha * conv[i] * hderivs[j];
-
+			for(int k=0; k < NFILTERS; k++){
+				delta = alpha * conv[k*NUM_CONV+i] * hderivs[j];
+				hiddenVelocity[k*NUM_CONV+i][j] = hiddenVelocity[k*NUM_CONV+i][j]*momentum + delta;
+				hiddenWeights[k*NUM_CONV+i][j] += hiddenVelocity[k*NUM_CONV+i][j];
+			}
 	// Update image layer weights
 	for(int i=0; i < NUM_CONV; i++) {
-		int x = (i / CDIM) / 2, y = (i % CDIM) / 2;
-		int index = x * CDIM / 2 + y * CDIM / 2; // because of downsampling
+		// int x = (i / CDIM) / 2, y = (i % CDIM) / 2;
+		int index = i; // x * CDIM / 2 + y * CDIM / 2; // because of downsampling
 
 		for(int j=0; j < reverse_map[i].size(); j++)
-			convWeights[j] += alpha * image[reverse_map[i][j]] * iderivs[index];
+			for(int k=0; k < NFILTERS; k++) {
+				delta = alpha * image[reverse_map[i+k*NUM_CONV][j]] * iderivs[i+k*NUM_CONV];
+				convVelocity[k][j] = momentum*convVelocity[k][j] + delta;
+				convWeights[k][j] += convVelocity[k][j];
+
+			}
 	}
 
 	// check progress
@@ -181,7 +198,7 @@ float train_example(vector<int> &image, int label) {
 	return C;
 }
 
-void train_data(int iters=5) {
+void train_data(int iters=10) {
 	// Read data from file
 	ifstream fin("ctrain.csv");
 
@@ -209,9 +226,42 @@ void train_data(int iters=5) {
 	}
 }
 
+void train_batch(int iters=5, int num_batches=1) {
+	// Read data from file
+	ifstream fin("minibatch.csv");
+
+	while(!fin.eof()) {
+		int label;
+		vector<int> image(NUM_INPUTS, 0);
+
+		fin >> label;
+		trainLabels.push_back(label);
+
+		for(int i=0; i < NUM_INPUTS; i++){
+			fin >> image[i];
+			image[i] -= 128;
+		}
+
+		trainImages.push_back((image));
+	}
+
+	// iterate
+	for(int batch=0; batch < num_batches; batch++)
+		for(int iter=0; iter < iters; iter++) { 
+			int giter = iter + (batch * iters);
+			alpha = alpha0;
+			// alpha = alpha0 / (1.0 + (giter / 6.0));
+			float sumError = 0;
+			for(int i=batch * BATCH_SIZE; i < (batch + 1) * BATCH_SIZE; i++) 
+				sumError += train_example(trainImages[i], trainLabels[i]);
+			float avgError = sumError / trainImages.size();
+			printf("%d. Error: %f\n", iter, avgError);
+		}
+}
+
 void test_data() {
 	ifstream fin("ctest.csv");
-	ofstream fout("cnn.out");
+	ofstream fout("cnn2.out");
 
 	while(!fin.eof()) {
 		vector<int> image(NUM_INPUTS, 0);
@@ -229,7 +279,7 @@ void test_data() {
 		if (flag) break;
 
 
-		vector<int> binaryImage = threshold(image);
+		vector<int> binaryImage = (image);
 
 		fout << classify(binaryImage) << endl;
 		// cout << image[123] << " "<< classify_image(binaryImage) << endl;
@@ -238,6 +288,6 @@ void test_data() {
 
 int main() {
 	initialize();
-	train_data();
+	train_batch();
 	test_data();
 }

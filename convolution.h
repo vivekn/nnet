@@ -6,19 +6,25 @@
 using namespace std;
 
 #define NUM_INPUTS 784
-#define NUM_CONV 576
+#define NUM_CONV 484
 #define NUM_HIDDEN 50
 #define NUM_CLASSES 10
-#define PATCH 5
+#define PATCH 7
 #define CDIM (29 - PATCH)
+#define NFILTERS 1
+#define BATCH_SIZE 42000
 
-float convWeights[PATCH * PATCH];
-float hiddenWeights[NUM_CONV/4][NUM_HIDDEN];
+float convWeights[NFILTERS][PATCH * PATCH];
+float hiddenWeights[NFILTERS*NUM_CONV][NUM_HIDDEN];
 float outWeights[NUM_HIDDEN][NUM_CLASSES];
+
+float convVelocity[NFILTERS][PATCH * PATCH] = {0};
+float hiddenVelocity[NFILTERS*NUM_CONV][NUM_HIDDEN] = {0};
+float outVelocity[NUM_HIDDEN][NUM_CLASSES] = {0};
 
 vector< vector<int> > trainImages;
 vector<int> trainLabels;
-vector<int> reverse_map[NUM_CONV];
+vector<int> reverse_map[NFILTERS*NUM_CONV];
 
 void initialize();
 
